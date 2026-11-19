@@ -10,7 +10,6 @@ import {
 } from "react-router-dom";
 import { Check, CheckCircle2, ArrowRight, LockKeyhole } from "lucide-react";
 import {
-  DEMO,
   city,
   money,
   passengerSchema,
@@ -21,15 +20,27 @@ import {
 } from "./domain";
 import { useStore } from "./store";
 import { service, errorMessage } from "./api";
-import { DemoNote, ErrorState, FlightCard, Loading } from "./components";
+import { ErrorState, FlightCard, Loading } from "./components";
 const schema = z.object({ passengers: z.array(passengerSchema).min(1) });
+const bookingSteps = ["flight", "passengers", "summary", "payment"];
 export default function Booking() {
   const { id } = useParams();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const back = params.get("return");
   const search = useStore((s) => s.search);
   const [flights, setFlights] = useState<Flight[]>([]);
-  const [step, setStep] = useState(0);
+  const [unlocked, setUnlocked] = useState(0);
+  const requestedStep = bookingSteps.indexOf(params.get("step") || "flight");
+  const step = !flights.length
+    ? 0
+    : Math.max(0, Math.min(requestedStep, unlocked));
+  function setStep(next: number) {
+    setUnlocked((current) => Math.max(current, next));
+    const updated = new URLSearchParams(params);
+    if (next) updated.set("step", bookingSteps[next]);
+    else updated.delete("step");
+    setParams(updated, { preventScrollReset: true });
+  }
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
@@ -41,7 +52,9 @@ export default function Booking() {
     handleSubmit,
     getValues,
     formState: { errors },
-  } = useForm<{ passengers: Passenger[] }>({
+  } = useForm<{
+    passengers: Passenger[];
+  }>({
     resolver: zodResolver(schema),
     defaultValues: {
       passengers: Array.from({ length: search.passengers }, () => ({
@@ -63,9 +76,15 @@ export default function Booking() {
     setBusy(true);
     setError("");
     try {
+      const current = schema.safeParse(getValues());
+      if (!current.success) {
+        setStep(1);
+        setError("Check the passenger details before continuing.");
+        return;
+      }
       const booking = await service.book(
         flights,
-        getValues().passengers,
+        current.data.passengers,
         key.current,
       );
       navigate("/confirmation/" + booking.id, { replace: true });
@@ -77,7 +96,6 @@ export default function Booking() {
   }
   return (
     <main className="page wrap">
-      <DemoNote />
       <div className="page-heading">
         <div>
           <span className="eyebrow copper-text">
@@ -126,10 +144,7 @@ export default function Booking() {
                 noValidate
               >
                 <h2>Who’s coming along?</h2>
-                <p>
-                  Use names exactly as shown on your travel documents. In demo
-                  mode, use fictional details.
-                </p>
+                <p>Use names exactly as shown on your travel documents.</p>
                 {fields.map((f, i) => (
                   <fieldset key={f.id}>
                     <legend>Traveller {i + 1}</legend>
@@ -218,24 +233,16 @@ export default function Booking() {
                 <div className="icon-circle">
                   <LockKeyhole />
                 </div>
-                <h2>
-                  {DEMO ? "Try the final step." : "Complete your reservation."}
-                </h2>
+                <h2>{"Complete your reservation."}</h2>
                 <p>
-                  {DEMO
-                    ? "This is a payment simulation. No card details are requested, no payment is taken, and no real ticket is issued."
-                    : "Submit your booking to the connected service. Payment status is determined by the backend; a real payment provider is not configured in this frontend."}
+                  {
+                    "Your seats are reserved by the backend and payment is simulated. No card details are requested, no money is taken, and no real ticket is issued."
+                  }
                 </p>
-                <div className="demo-payment">
+                <div className="payment-summary">
                   <span>PAYMENT METHOD</span>
-                  <h3>
-                    {DEMO ? "Demonstration payment" : "Backend reservation"}
-                  </h3>
-                  <small>
-                    {DEMO
-                      ? "No financial information required"
-                      : "No card collection available"}
-                  </small>
+                  <h3>{"Simulated payment"}</h3>
+                  <small>{"No card collection available"}</small>
                   <CheckCircle2 />
                 </div>
                 <label className="check">
@@ -244,9 +251,7 @@ export default function Booking() {
                     checked={consent}
                     onChange={(e) => setConsent(e.target.checked)}
                   />
-                  {DEMO
-                    ? "I understand this creates a demo booking only."
-                    : "I have reviewed the passenger and journey details."}
+                  {"I have reviewed the passenger and journey details."}
                 </label>
                 <div className="actions">
                   <button
@@ -261,11 +266,7 @@ export default function Booking() {
                     disabled={!consent || busy}
                     onClick={pay}
                   >
-                    {busy
-                      ? "Processing…"
-                      : DEMO
-                        ? "Complete simulation"
-                        : "Submit booking"}{" "}
+                    {busy ? "Processing…" : "Submit booking"}{" "}
                     <ArrowRight size={16} />
                   </button>
                 </div>
@@ -287,21 +288,19 @@ export default function Booking() {
                 <span>
                   {i ? "Return" : "Outbound"} × {fields.length}
                 </span>
-                <strong>{money(f.price * fields.length)}</strong>
+                <strong>{money(f.price * fields.length, f.currency)}</strong>
               </div>
             ))}
             <div className="price-row">
               <span>Additional fees</span>
-              <strong>{money(0)}</strong>
+              <strong>{money(0, flights[0]?.currency)}</strong>
             </div>
             <div className="price-row total">
               <span>Total</span>
-              <strong>{money(total)}</strong>
+              <strong>{money(total, flights[0]?.currency)}</strong>
             </div>
             <small>
-              {DEMO
-                ? "Illustrative fare, including demo taxes. No real fare availability is represented."
-                : "Final pricing is validated by the backend when submitted."}
+              {"Final pricing is validated by the backend when submitted."}
             </small>
           </aside>
         </div>
@@ -321,7 +320,6 @@ export function Confirmation() {
   }, [id]);
   return (
     <main className="page narrow">
-      <DemoNote />
       {error ? (
         <ErrorState message={error} />
       ) : !booking ? (
@@ -330,18 +328,11 @@ export function Confirmation() {
         <>
           <div className="confirmation">
             <CheckCircle2 size={46} />
-            <span className="eyebrow">
-              {booking.demo ? "SIMULATION COMPLETE" : "BOOKING RECEIVED"}
-            </span>
-            <h1>
-              {booking.demo
-                ? "Your demo journey is ready."
-                : "Your journey, all together."}
-            </h1>
+            <span className="eyebrow">{"BOOKING RECEIVED"}</span>
+            <h1>{"Your journey, all together."}</h1>
             <p>
-              {booking.demo
-                ? "No payment was taken and no real ticket was issued."
-                : "Your reservation status is shown below."}
+              Your reservation status is shown below. Payment is simulated; no
+              money was charged and no airline ticket was issued.
             </p>
             <div className="reference">{booking.reference}</div>
             <p>
@@ -358,7 +349,7 @@ export function Confirmation() {
                 {p.firstName} {p.lastName}
               </p>
             ))}
-            <strong>Total: {money(booking.total)}</strong>
+            <strong>Total: {money(booking.total, booking.currency)}</strong>
           </div>
           <Link className="button" to="/trips">
             Go to My Trips <ArrowRight size={17} />

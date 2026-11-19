@@ -1,0 +1,11 @@
+.venv/
+venv/
+.env
+__pycache__/
+*.pyc
+*.sqlite3
+staticfiles/
+.coverage
+.ruff_cache/
+control/*.exchange
+celerybeat-schedule*

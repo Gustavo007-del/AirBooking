@@ -1,33 +1,38 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { ArrowRight, Plane, Clock3, UserRound, Luggage } from "lucide-react";
+import { service, errorMessage, fieldErrors } from "./api";
+import { Notice } from "./Notice";
 import {
-  ArrowRight,
-  Plane,
-  Clock3,
-  UserRound,
-  Luggage,
-  CheckCircle2,
-} from "lucide-react";
-import { service, errorMessage } from "./api";
-import {
-  DEMO,
   city,
   dateAfter,
   money,
   prettyDate,
   type Booking,
   type Flight,
+  type LiveFlight,
 } from "./domain";
 import { useStore } from "./store";
-import { DemoNote, ErrorState, FlightCard, Loading } from "./components";
+import { ErrorState, FlightCard, Loading } from "./components";
+import { LiveFlightCard } from "./LiveFlightCard";
+import { pollVisible } from "./livePolling";
+import { BookingPassengerEditor } from "./BookingPassengerEditor";
 const authSchema = z.object({
   name: z.string(),
   email: z.string().email("Enter a valid email"),
-  password: z.string().min(8, "Use at least 8 characters"),
+  password: z.string().min(1, "Enter your password"),
 });
+const minimumPasswordLength = 8;
+
 export function Auth() {
   const location = useLocation();
   const registering = location.pathname === "/register";
@@ -38,37 +43,44 @@ export function Auth() {
   const {
     register,
     handleSubmit,
-    getValues,
+    setError: setFieldError,
+    clearErrors,
     formState: { errors },
   } = useForm<z.infer<typeof authSchema>>({
     resolver: zodResolver(
       registering
-        ? authSchema.refine((v) => v.name.trim().length >= 2, {
-            path: ["name"],
-            message: "Enter your name",
-          })
+        ? authSchema
+            .extend({
+              password: z
+                .string()
+                .min(
+                  minimumPasswordLength,
+                  `Use at least ${minimumPasswordLength} characters`,
+                )
+                .max(128, "Use no more than 128 characters"),
+            })
+            .refine((v) => v.name.trim().length >= 2, {
+              path: ["name"],
+              message: "Enter your name",
+            })
         : authSchema,
     ),
     defaultValues: { name: "", email: "", password: "" },
   });
   const destination =
-    (location.state as { from?: string })?.from || "/dashboard";
-  async function demo(role: "user" | "admin") {
-    setBusy(true);
-    try {
-      const u = await service.demoLogin(role);
-      setUser(u);
-      navigate(role === "admin" ? "/admin" : destination, { replace: true });
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+    (
+      location.state as {
+        from?: string;
+      }
+    )?.from || "/dashboard";
+  useEffect(() => {
+    setError("");
+    clearErrors();
+  }, [registering, clearErrors]);
   return (
     <main className="auth-page">
       <div className="auth-art">
-        <span className="eyebrow">AERÉ / A HIGHER PERSPECTIVE</span>
+        <span className="eyebrow">AirB / A HIGHER PERSPECTIVE</span>
         <h1>
           Every journey
           <br />
@@ -86,7 +98,6 @@ export function Auth() {
             ? "Create an account to start exploring."
             : "Sign in to bring your journeys together."}
         </p>
-        <DemoNote />
         <form
           onSubmit={handleSubmit(async (data) => {
             setBusy(true);
@@ -97,15 +108,23 @@ export function Auth() {
                 : await service.login(data.email, data.password);
               setUser(u);
               navigate(
-                u.status === "pending"
+                u.status !== "approved"
                   ? "/pending"
-                  : u.status === "rejected"
-                    ? "/pending"
+                  : u.role === "admin"
+                    ? "/admin"
                     : destination,
                 { replace: true },
               );
             } catch (e) {
               setError(errorMessage(e));
+              const fields = fieldErrors(e);
+              for (const field of ["name", "email", "password"] as const) {
+                if (fields[field])
+                  setFieldError(field, {
+                    type: "server",
+                    message: fields[field],
+                  });
+              }
             } finally {
               setBusy(false);
             }
@@ -114,29 +133,68 @@ export function Auth() {
         >
           {registering && (
             <label>
-              Full name
-              <input {...register("name")} autoComplete="name" />
-              {errors.name && <em>{errors.name.message}</em>}
+              <span id="auth-name-label">Full name</span>
+              <input
+                {...register("name")}
+                autoComplete="name"
+                aria-labelledby="auth-name-label"
+                aria-invalid={!!errors.name}
+                aria-describedby={errors.name ? "auth-name-error" : undefined}
+              />
+              {errors.name && (
+                <em id="auth-name-error">{errors.name.message}</em>
+              )}
             </label>
           )}
           <label>
-            Email address
-            <input {...register("email")} type="email" autoComplete="email" />
-            {errors.email && <em>{errors.email.message}</em>}
+            <span id="auth-email-label">Email address</span>
+            <input
+              {...register("email")}
+              type="email"
+              autoComplete="email"
+              aria-labelledby="auth-email-label"
+              aria-invalid={!!errors.email}
+              aria-describedby={errors.email ? "auth-email-error" : undefined}
+            />
+            {errors.email && (
+              <em id="auth-email-error">{errors.email.message}</em>
+            )}
           </label>
           <label>
-            Password
+            <span id="auth-password-label">Password</span>
             <input
               {...register("password")}
               type="password"
               autoComplete={registering ? "new-password" : "current-password"}
+              aria-labelledby="auth-password-label"
+              aria-invalid={!!errors.password}
+              aria-describedby={
+                errors.password
+                  ? "auth-password-error"
+                  : registering
+                    ? "auth-password-help"
+                    : undefined
+              }
             />
-            {errors.password && <em>{errors.password.message}</em>}
+            {errors.password && (
+              <em id="auth-password-error">{errors.password.message}</em>
+            )}
+            {registering && !errors.password && (
+              <small id="auth-password-help" className="field-help">
+                Use at least {minimumPasswordLength} characters. Avoid common
+                passwords and your name or email address.
+              </small>
+            )}
           </label>
           {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
+            <Notice
+              title={
+                registering
+                  ? "We couldn’t create your account yet"
+                  : "We couldn’t sign you in"
+              }
+              message={error}
+            />
           )}
           <button disabled={busy} className="button full">
             {busy ? "Please wait…" : registering ? "Create account" : "Sign in"}
@@ -144,47 +202,11 @@ export function Auth() {
           </button>
         </form>
         <p className="auth-switch">
-          {registering ? "Already have an account?" : "New to AERÉ?"}{" "}
+          {registering ? "Already have an account?" : "New to Air Booking?"}{" "}
           <Link to={registering ? "/login" : "/register"}>
             {registering ? "Sign in" : "Create an account"}
           </Link>
         </p>
-        {DEMO && (
-          <div className="demo-access">
-            <strong>Explore the working demo</strong>
-            <p>No credentials needed. Use fictional information.</p>
-            <button
-              className="button outline"
-              disabled={busy}
-              onClick={() => demo("user")}
-            >
-              Demo traveller <ArrowRight size={14} />
-            </button>
-            <button
-              className="text-link"
-              disabled={busy}
-              onClick={async () => {
-                setError("");
-                try {
-                  const u = await service.demoResume(getValues().email);
-                  setUser(u);
-                  navigate(u.status === "approved" ? destination : "/pending");
-                } catch (e) {
-                  setError(errorMessage(e));
-                }
-              }}
-            >
-              Resume a registered demo account →
-            </button>
-            <button
-              className="text-link"
-              disabled={busy}
-              onClick={() => demo("admin")}
-            >
-              Open demo administration →
-            </button>
-          </div>
-        )}
       </div>
     </main>
   );
@@ -212,12 +234,6 @@ export function Pending() {
               ? "Your registration was not approved. Contact your administrator for assistance."
               : "Your registration is awaiting administrator approval. Booking features become available after your account is approved."}
         </p>
-        {DEMO && (
-          <p>
-            This is a demo approval state. Administrators can review sample
-            registrations in the demo console.
-          </p>
-        )}
         <Link
           className="button"
           to={user?.status === "approved" ? "/flights" : "/login"}
@@ -235,12 +251,31 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
   const [error, setError] = useState("");
   const [tab, setTab] = useState("Upcoming");
   const [retry, setRetry] = useState(0);
+  useEffect(
+    () =>
+      loading || error
+        ? undefined
+        : pollVisible(() => service.bookings(), setBookings),
+    [loading, error],
+  );
   useEffect(() => {
+    let active = true;
+    setError("");
+    setLoading(true);
     service
       .bookings()
-      .then(setBookings)
-      .catch((e) => setError(errorMessage(e)))
-      .finally(() => setLoading(false));
+      .then((value) => {
+        if (active) setBookings(value);
+      })
+      .catch((e) => {
+        if (active) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [retry]);
   const filtered = bookings.filter((b) =>
     tab === "All" || tab === "Cancelled"
@@ -252,7 +287,6 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
   );
   return (
     <main className="page wrap">
-      <DemoNote />
       <div className="page-heading">
         <div>
           <span className="eyebrow copper-text">
@@ -319,7 +353,7 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
             <div className="row">
               <span className="eyebrow">{b.reference}</span>
               <span className="badge">
-                {b.demo ? "Demo · " : ""}
+                {""}
                 {b.status}
               </span>
             </div>
@@ -330,6 +364,12 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
             <p>
               {prettyDate(b.flights[0].date)} · {b.flights[0].number} ·{" "}
               {b.passengers.length} traveller(s)
+            </p>
+            <p>
+              Flight status:{" "}
+              {b.flights
+                .map((flight) => `${flight.number} ${flight.status}`)
+                .join(" · ")}
             </p>
             <div className="trip-line">
               <b>
@@ -344,7 +384,7 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
             </div>
             <div className="row">
               <small>
-                Payment: {b.paymentStatus} · {money(b.total)}
+                Payment: {b.paymentStatus} · {money(b.total, b.currency)}
               </small>
               <Link className="text-link" to={"/trips/" + b.id}>
                 View booking <ArrowRight size={16} />
@@ -370,19 +410,46 @@ export function Trips({ dashboard = false }: { dashboard?: boolean }) {
 }
 export function TripDetails() {
   const { id } = useParams();
+  const [params] = useSearchParams();
+  const admin = params.get("admin") === "1";
   const [b, setB] = useState<Booking>();
   const [error, setError] = useState("");
+  const [cancelError, setCancelError] = useState("");
+  const [cancelled, setCancelled] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [editing, setEditing] = useState(false);
+  useEffect(
+    () =>
+      id && !editing && !cancelling
+        ? pollVisible(() => service.booking(id, admin), setB)
+        : undefined,
+    [id, admin, editing, cancelling],
+  );
   useEffect(() => {
+    let active = true;
+    setB(undefined);
+    setError("");
+    setCancelError("");
+    setConfirmCancel(false);
+    setCancelled(false);
+    setEditing(false);
     service
-      .booking(id!)
-      .then(setB)
-      .catch((e) => setError(errorMessage(e)));
-  }, [id]);
+      .booking(id!, admin)
+      .then((value) => {
+        if (active) setB(value);
+      })
+      .catch((e) => {
+        if (active) setError(errorMessage(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, [id, admin]);
   return (
     <main className="page narrow">
-      <DemoNote />
-      <Link className="text-link" to="/trips">
-        ← My Trips
+      <Link className="text-link" to={admin ? "/admin" : "/trips"}>
+        {admin ? "← Administration" : "← My Trips"}
       </Link>
       {error ? (
         <ErrorState message={error} />
@@ -392,7 +459,8 @@ export function TripDetails() {
         <>
           <h1>{b.reference}</h1>
           <p>
-            {b.status} · Payment {b.paymentStatus} · {money(b.total)}
+            {b.status} · Payment {b.paymentStatus} ·{" "}
+            {money(b.total, b.currency)}
           </p>
           {b.flights.map((f) => (
             <FlightCard flight={f} key={f.id} />
@@ -404,7 +472,82 @@ export function TripDetails() {
                 {p.firstName} {p.lastName} · {p.email}
               </p>
             ))}
+            {b.status === "Pending" &&
+              (!editing ? (
+                <button
+                  type="button"
+                  className="button outline"
+                  onClick={() => setEditing(true)}
+                >
+                  Edit passenger details
+                </button>
+              ) : (
+                <BookingPassengerEditor
+                  booking={b}
+                  admin={admin}
+                  onCancel={() => setEditing(false)}
+                  onSave={(value) => {
+                    setB(value);
+                    setEditing(false);
+                  }}
+                />
+              ))}
           </div>
+          {cancelError && <Notice message={cancelError} />}
+          {cancelled && (
+            <Notice
+              tone="success"
+              message="Reservation cancelled and seats released."
+            />
+          )}
+          {b.status !== "Cancelled" &&
+            (confirmCancel ? (
+              <div className="panel">
+                <Notice
+                  tone="warning"
+                  title="Cancel this booking?"
+                  message="This will release the reserved seats."
+                />
+                <div className="actions">
+                  <button
+                    type="button"
+                    disabled={cancelling}
+                    className="button"
+                    onClick={async () => {
+                      setCancelling(true);
+                      setCancelError("");
+                      try {
+                        setB(await service.cancelBooking(b.id, admin));
+                        setConfirmCancel(false);
+                        setCancelled(true);
+                      } catch (failure) {
+                        setCancelError(errorMessage(failure));
+                      } finally {
+                        setCancelling(false);
+                      }
+                    }}
+                  >
+                    {cancelling ? "Cancelling…" : "Confirm cancellation"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cancelling}
+                    className="button outline"
+                    onClick={() => setConfirmCancel(false)}
+                  >
+                    Keep booking
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="button outline"
+                onClick={() => setConfirmCancel(true)}
+              >
+                Cancel booking
+              </button>
+            ))}
         </>
       )}
     </main>
@@ -415,17 +558,25 @@ export function Profile() {
   const setUser = useStore((s) => s.setUser);
   const [name, setName] = useState(user.name);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   return (
     <main className="page narrow">
-      <DemoNote />
       <h1>Your profile.</h1>
       <form
         className="panel"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          if (DEMO) {
-            setUser({ ...user, name });
+          setSaving(true);
+          setError("");
+          setSaved(false);
+          try {
+            setUser(await service.profile(name));
             setSaved(true);
+          } catch (error) {
+            setError(errorMessage(error));
+          } finally {
+            setSaving(false);
           }
         }}
       >
@@ -448,15 +599,17 @@ export function Profile() {
         <p>
           Account: {user.status} · Role: {user.role}
         </p>
-        <button className="button" disabled={!DEMO}>
-          Save demo profile
+        <button className="button" disabled={saving}>
+          {saving ? "Saving…" : "Save profile"}
         </button>
         {saved && (
-          <p role="status">
-            <CheckCircle2 size={16} /> Profile updated for this session.
-          </p>
+          <Notice
+            tone="success"
+            title="Profile updated"
+            message="Your changes have been saved."
+          />
         )}
-        {!DEMO && <p>Profile updates require a configured backend endpoint.</p>}
+        {error && <ErrorState message={error} />}
       </form>
     </main>
   );
@@ -464,18 +617,44 @@ export function Profile() {
 export function FlightStatus() {
   const [query, setQuery] = useState("");
   const [flight, setFlight] = useState<Flight>();
+  const [live, setLive] = useState<LiveFlight>();
+  const [tracked, setTracked] = useState<{
+    value: string;
+    type: "id" | "number";
+  }>();
+  const [stale, setStale] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!tracked) return;
+    const failed = () => setStale(true);
+    if (tracked.type === "id")
+      return pollVisible(
+        () => service.flight(tracked.value),
+        (value) => {
+          setFlight(value);
+          setStale(false);
+        },
+        failed,
+      );
+    return pollVisible(
+      () => service.liveFlight(tracked.value),
+      (value) => {
+        setLive(value);
+        setStale(false);
+      },
+      failed,
+      60_000,
+    );
+  }, [tracked]);
   return (
     <main className="page narrow">
-      <DemoNote />
       <span className="eyebrow copper-text">A CLEARER PICTURE</span>
       <h1>Flight status.</h1>
       <p>
-        Look up a flight by its booking flight ID.{" "}
-        {DEMO
-          ? "All status information shown here is sample data."
-          : "Status comes from the connected backend."}
+        Enter an airline flight number such as BA178, or the flight ID from your
+        booking. A flight number returns the occurrence AirLabs currently
+        reports.
       </p>
       <form
         className="panel"
@@ -484,8 +663,20 @@ export function FlightStatus() {
           setBusy(true);
           setError("");
           setFlight(undefined);
+          setLive(undefined);
+          setTracked(undefined);
+          setStale(false);
           try {
-            setFlight(await service.flight(query));
+            const value = query.trim().replace(/\s+/g, "");
+            if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)) {
+              const id = value.toLowerCase();
+              setFlight(await service.flight(id));
+              setTracked({ value: id, type: "id" });
+            } else {
+              const number = value.toUpperCase();
+              setLive(await service.liveFlight(number));
+              setTracked({ value: number, type: "number" });
+            }
           } catch (e) {
             setError(errorMessage(e));
           } finally {
@@ -494,12 +685,12 @@ export function FlightStatus() {
         }}
       >
         <label>
-          Flight ID
+          Flight number or ID
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             required
-            placeholder="Copy a flight ID from the details URL"
+            placeholder="BA178 or a booking flight ID"
           />
         </label>
         <button className="button" disabled={busy}>
@@ -507,15 +698,23 @@ export function FlightStatus() {
         </button>
       </form>
       {error && <ErrorState message={error} />}{" "}
+      {stale && (
+        <Notice
+          tone="warning"
+          message="Refresh unavailable. Showing the last successful update."
+        />
+      )}
+      {live && <LiveFlightCard flight={live} />}
       {flight && (
         <>
           <FlightCard flight={flight} />
           <p>
             {flight.updatedAt
               ? "Last updated: " + new Date(flight.updatedAt).toLocaleString()
-              : DEMO
-                ? "Sample status · no live connection"
-                : "Update time not supplied by backend"}
+              : "Update time not supplied by backend"}
+            {flight.status_source === "airlabs"
+              ? " · AirLabs"
+              : " · Recorded status"}
           </p>
         </>
       )}

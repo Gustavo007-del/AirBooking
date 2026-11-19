@@ -1,230 +1,238 @@
 import axios from "axios";
 import {
-  DEMO,
   type Search,
   type Flight,
+  type FlightSearchSource,
   type User,
   type Booking,
   type Passenger,
-  defaultSearch,
+  type Airport,
+  type Route,
+  type LiveFlight,
 } from "./domain";
 import { useStore } from "./store";
+import type { OperationsSnapshot } from "./AdminOverview";
 const baseURL = import.meta.env.VITE_API_BASE_URL || "";
 export const client = axios.create({ baseURL, timeout: 15000 });
-let access: string | null = null,
-  refresh: string | null = null;
-let refreshing: Promise<string> | null = null;
+const session = axios.create({
+  baseURL,
+  timeout: 15000,
+  withCredentials: true,
+  headers: { "X-Air-Session": "1" },
+});
+let access: string | null = null;
+let refreshing: Promise<User | null> | null = null;
+let sessionVersion = 0;
+
+export function restoreSession(): Promise<User | null> {
+  const version = sessionVersion;
+  refreshing ??= session
+    .post<{ access: string; user: User }>("/api/auth/session/")
+    .then(({ data, status }) => {
+      if (version !== sessionVersion || status === 204) return null;
+      access = data.access;
+      return data.user;
+    })
+    .catch(() => null)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
+}
+
 client.interceptors.request.use((config) => {
   if (access) config.headers.Authorization = `Bearer ${access}`;
   return config;
 });
-client.interceptors.response.use(
-  (r) => r,
-  async (error) => {
-    const req = error.config;
-    if (error.response?.status === 401 && refresh && !req._retry) {
-      req._retry = true;
-      try {
-        refreshing ??= axios
-          .post(baseURL + "/api/auth/token/refresh/", { refresh })
-          .then((r) => {
-            access = r.data.access;
-            if (r.data.refresh) refresh = r.data.refresh;
-            return access!;
-          })
-          .finally(() => {
-            refreshing = null;
-          });
-        await refreshing;
-        return client(req);
-      } catch {
-        logout();
-      }
-    }
-    throw error;
-  },
-);
-export function logout() {
-  access = null;
-  refresh = null;
-  useStore.getState().setUser(null);
-}
-const read = <T>(key: string, fallback: T): T => {
-  try {
-    return (
-      JSON.parse(localStorage.getItem("aere-demo-" + key) || "null") ?? fallback
-    );
-  } catch {
-    return fallback;
+client.interceptors.response.use(undefined, async (error) => {
+  const req = error.config;
+  if (error.response?.status === 401 && access && req && !req._retry) {
+    req._retry = true;
+    const user = await restoreSession();
+    if (user) return client(req);
+    access = null;
+    useStore.getState().setUser(null);
   }
-};
-const write = (key: string, v: unknown) =>
-  localStorage.setItem("aere-demo-" + key, JSON.stringify(v));
-const delay = () => new Promise((r) => setTimeout(r, 350));
-const list = <T>(data: T[] | { results: T[] }) =>
-  Array.isArray(data) ? data : data.results;
-const seedUsers: User[] = [
-  {
-    id: "review-1",
-    name: "Alex Morgan",
-    email: "alex@example.com",
-    role: "user",
-    status: "pending",
-  },
-  {
-    id: "review-2",
-    name: "Sam Rivera",
-    email: "sam@example.com",
-    role: "user",
-    status: "pending",
-  },
-];
-export function mockFlights(s: Search): Flight[] {
-  return [0, 1, 2, 3, 4].map((i) => ({
-    id: `${s.origin}-${s.destination}-${s.departure}-${i}`,
-    number: `AE ${201 + i * 32}`,
-    airline: "AERÉ Demonstration",
-    origin: s.origin,
-    destination: s.destination,
-    date: s.departure,
-    departure: ["06:30", "09:45", "14:20", "18:10", "22:45"][i],
-    arrival: ["12:20", "15:05", "22:10", "23:45", "06:20"][i],
-    arrivalDay: i === 4 ? 1 : 0,
-    duration: [530, 500, 650, 515, 575][i],
-    stops: i === 2 ? 1 : 0,
-    price:
-      [38600, 42900, 32400, 45800, 35900][i] *
-      (s.cabin === "Business" ? 2.8 : s.cabin === "Premium economy" ? 1.5 : 1),
-    seats: [8, 4, 16, 3, 12][i],
-    status: "On time",
-  }));
+  throw error;
+});
+export function logout() {
+  sessionVersion++;
+  access = null;
+  useStore.getState().setUser(null);
+  void Promise.resolve(refreshing)
+    .then(() => session.delete("/api/auth/session/"))
+    .catch(() => {});
 }
+const list = <T>(
+  data:
+    | T[]
+    | {
+        results: T[];
+      },
+) => (Array.isArray(data) ? data : data.results);
+async function allPages<T>(
+  path: string,
+  params?: object,
+  onSource?: (source: FlightSearchSource) => void,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let next: string | null = path;
+  while (next) {
+    const {
+      data,
+    }: {
+      data:
+        | T[]
+        | {
+            results: T[];
+            next: string | null;
+            source?: FlightSearchSource;
+          };
+    } = await client.get(next, { params });
+    rows.push(...list(data));
+    if (next === path && !Array.isArray(data) && data.source)
+      onSource?.(data.source);
+    const link: string | null = Array.isArray(data) ? null : data.next;
+    // Use only the API path; never forward bearer credentials to a different host.
+    if (link) {
+      const url: URL = new URL(link, window.location.origin);
+      next = url.pathname + url.search;
+    } else next = null;
+    params = undefined;
+  }
+  return rows;
+}
+const managedFlights = new Map<string, Flight>();
 export const service = {
-  async search(s: Search): Promise<Flight[]> {
-    if (!DEMO)
-      return list(
-        (await client.get("/api/flights/search/", { params: s })).data,
-      );
-    await delay();
-    const edits = read<Flight[]>("flights", []);
-    return mockFlights(s)
-      .map((f) => edits.find((e) => e.id === f.id) || f)
-      .concat(
-        edits.filter(
-          (f) =>
-            f.origin === s.origin &&
-            f.destination === s.destination &&
-            f.date === s.departure &&
-            !f.id.startsWith(`${s.origin}-${s.destination}`),
-        ),
-      );
+  async airportSuggestions(search: string) {
+    const { data } = await client.get<{ results: Airport[] }>(
+      "/api/airports/",
+      { params: { search, page_size: 20 } },
+    );
+    return data.results;
+  },
+  async liveFlight(number: string) {
+    return (
+      await client.get<LiveFlight>("/api/flights/live-status/", {
+        params: { number },
+      })
+    ).data;
+  },
+  async liveSchedule(
+    search: Pick<Search, "origin" | "destination" | "departure">,
+    upcoming = false,
+  ) {
+    const { origin, destination, departure } = search;
+    return (
+      await client.get<{
+        configured: boolean;
+        outside_window: boolean;
+        results: LiveFlight[];
+      }>("/api/flights/schedules/", {
+        params: { origin, destination, departure, upcoming },
+      })
+    ).data;
+  },
+  async updateBooking(id: string, passengers: Passenger[], admin = false) {
+    return (
+      await client.patch<Booking>(
+        `/api/${admin ? "admin/" : ""}bookings/${id}/`,
+        { passengers },
+      )
+    ).data;
+  },
+  async operations(): Promise<OperationsSnapshot> {
+    return (await client.get<OperationsSnapshot>("/api/admin/operations/"))
+      .data;
+  },
+  async updateCustomer(
+    id: string,
+    data: { name: string; phone: string; is_active: boolean },
+  ) {
+    return (await client.patch<User>(`/api/admin/users/${id}/`, data)).data;
+  },
+  async cancelBooking(id: string, admin = false) {
+    return (
+      await client.post<Booking>(
+        `/api/${admin ? "admin/" : ""}bookings/${id}/cancel/`,
+      )
+    ).data;
+  },
+  airports(admin = false) {
+    return allPages<Airport>(
+      admin ? "/api/admin/airports/" : "/api/airports/",
+      { page_size: 100 },
+    );
+  },
+  routes(admin = false) {
+    return allPages<Route>(admin ? "/api/admin/routes/" : "/api/routes/");
+  },
+  destinations() {
+    return allPages<Airport>("/api/destinations/");
+  },
+  async saveAirport(id: number | undefined, data: Partial<Airport>) {
+    if (id) await client.patch(`/api/admin/airports/${id}/`, data);
+    else await client.post("/api/admin/airports/", data);
+  },
+  async saveRoute(id: number | undefined, data: Partial<Route>) {
+    if (id) await client.patch(`/api/admin/routes/${id}/`, data);
+    else await client.post("/api/admin/routes/", data);
+  },
+  async search(s: Search) {
+    let source: FlightSearchSource = "database";
+    const flights = await allPages<Flight>(
+      "/api/flights/search/",
+      { ...s, page_size: 100 },
+      (value) => {
+        source = value;
+      },
+    );
+    return { flights, source };
   },
   async flight(id: string): Promise<Flight> {
-    if (!DEMO)
-      return (await client.get(`/api/flights/${encodeURIComponent(id)}/`)).data;
-    const custom = read<Flight[]>("flights", []).find((f) => f.id === id);
-    if (custom) return custom;
-    const p = id.split("-");
-    const s = {
-      ...useStore.getState().search,
-      origin: p[0],
-      destination: p[1],
-      departure: p.slice(2, 5).join("-"),
-    };
-    const found = mockFlights(s).find((f) => f.id === id);
-    if (!found) throw Error("Flight not found");
-    return found;
+    return (
+      await client.get(`/api/flights/${encodeURIComponent(id)}/`, {
+        params: { cabin: useStore.getState().search.cabin },
+      })
+    ).data;
   },
   async login(email: string, password: string): Promise<User> {
-    if (DEMO)
-      throw Error(
-        "Use a labelled demo session below. Real sign-in requires a connected API.",
-      );
-    const r = (await client.post("/api/auth/login/", { email, password })).data;
+    const r = (await session.post("/api/auth/login/", { email, password }))
+      .data;
     access = r.access;
-    refresh = r.refresh;
+
     return r.user;
-  },
-  async demoLogin(role: "user" | "admin"): Promise<User> {
-    if (!DEMO) throw Error("Demo sessions are disabled");
-    await delay();
-    return {
-      id: role === "admin" ? "demo-admin" : "demo-traveller",
-      name: role === "admin" ? "Demo Administrator" : "Demo Traveller",
-      email: `${role}@example.com`,
-      role,
-      status: "approved",
-    };
-  },
-  async demoResume(email: string): Promise<User> {
-    if (!DEMO) throw Error("Demo sessions are disabled");
-    const u = (await this.users()).find((u) => u.email === email);
-    if (!u) throw Error("No demo registration found for this email.");
-    return u;
   },
   async register(data: {
     name: string;
     email: string;
     password: string;
   }): Promise<User> {
-    if (!DEMO) return (await client.post("/api/auth/register/", data)).data;
-    await delay();
-    const users = read<User[]>("users", seedUsers);
-    if (users.some((u) => u.email === data.email))
-      throw Error("This email is already registered in this demo");
-    const u: User = {
-      id: crypto.randomUUID(),
-      name: data.name,
-      email: data.email,
-      role: "user",
-      status: "pending",
-    };
-    write("users", [...users, u]);
-    return u;
+    return (await client.post("/api/auth/register/", data)).data;
   },
   async users(): Promise<User[]> {
-    return DEMO
-      ? read("users", seedUsers)
-      : list((await client.get("/api/admin/users/pending/")).data);
+    return allPages<User>("/api/admin/users/");
   },
   async approve(id: string): Promise<void> {
-    if (!DEMO) {
-      await client.post(`/api/admin/users/${id}/approve/`);
-      return;
-    }
-    write(
-      "users",
-      (await this.users()).map((u) =>
-        u.id === id ? { ...u, status: "approved" } : u,
-      ),
-    );
+    await client.post(`/api/admin/users/${id}/approve/`);
+    return;
   },
   async reject(id: string): Promise<void> {
-    if (!DEMO)
-      throw Error(
-        "User rejection endpoint is not configured in the backend contract.",
-      );
-    write(
-      "users",
-      (await this.users()).map((u) =>
-        u.id === id ? { ...u, status: "rejected" } : u,
-      ),
+    await client.post(`/api/admin/users/${id}/reject/`);
+    return;
+  },
+  async bookings(admin = false, filters?: object): Promise<Booking[]> {
+    return allPages<Booking>(
+      admin ? "/api/admin/bookings/" : "/api/bookings/",
+      filters,
     );
   },
-  async bookings(): Promise<Booking[]> {
-    if (!DEMO) return list((await client.get("/api/bookings/")).data);
-    await delay();
-    const all = read<Booking[]>("bookings", []);
-    const user = useStore.getState().user;
-    return user?.role === "admin"
-      ? all
-      : all.filter((b) => b.userId === user?.id);
-  },
-  async booking(id: string): Promise<Booking> {
-    if (!DEMO) return (await client.get(`/api/bookings/${id}/`)).data;
-    const b = (await this.bookings()).find((b) => b.id === id);
-    if (!b) throw Error("Booking not found");
-    return b;
+  async booking(id: string, admin = false): Promise<Booking> {
+    return (
+      await client.get(
+        `${admin ? "/api/admin/bookings/" : "/api/bookings/"}${id}/`,
+      )
+    ).data;
   },
   async book(
     flights: Flight[],
@@ -234,67 +242,82 @@ export const service = {
     const user = useStore.getState().user;
     if (!user || user.status !== "approved")
       throw Error("An approved account is required");
-    if (!DEMO)
-      return (
-        await client.post(
-          "/api/bookings/",
-          { flight_ids: flights.map((f) => f.id), passengers },
-          { headers: { "Idempotency-Key": key } },
-        )
-      ).data;
-    await delay();
-    const all = read<Booking[]>("bookings", []);
-    const prior = all.find((b) => b.id === key);
-    if (prior) return prior;
-    const b: Booking = {
-      id: key,
-      reference: "DEMO-" + key.slice(0, 6).toUpperCase(),
-      userId: user.id,
-      flights,
-      passengers,
-      total: flights.reduce((s, f) => s + f.price, 0) * passengers.length,
-      status: "Confirmed",
-      paymentStatus: "Simulated",
-      createdAt: new Date().toISOString(),
-      demo: true,
-    };
-    write("bookings", [b, ...all]);
-    return b;
+    const reservation: Booking = (
+      await client.post(
+        "/api/bookings/",
+        {
+          flight_ids: flights.map((f) => f.id),
+          passengers,
+          cabin: useStore.getState().search.cabin,
+        },
+        { headers: { "Idempotency-Key": key } },
+      )
+    ).data;
+    // Retrying reuses both the reservation and its one-to-one simulated payment.
+    if (reservation.status === "Confirmed") return reservation;
+    if (reservation.status === "Cancelled")
+      throw Error(
+        "This reservation expired or was cancelled. Start a new booking.",
+      );
+    return (
+      await client.post(`/api/bookings/${reservation.id}/payment/`, {
+        outcome: "success",
+      })
+    ).data;
   },
   async adminFlights(): Promise<Flight[]> {
-    return DEMO
-      ? [
-          ...mockFlights(defaultSearch).filter(
-            (f) => !read<Flight[]>("flights", []).some((e) => e.id === f.id),
-          ),
-          ...read<Flight[]>("flights", []),
-        ]
-      : list((await client.get("/api/admin/flights/")).data);
+    const rows = await allPages<Flight>("/api/admin/flights/", {
+      page_size: 100,
+    });
+    managedFlights.clear();
+    rows.forEach((flight) => managedFlights.set(flight.id, flight));
+    return rows;
+  },
+  adminRouteFlights(route: number) {
+    return allPages<Flight>("/api/admin/flights/", { route, page_size: 100 });
   },
   async saveFlight(f: Flight): Promise<void> {
-    if (!DEMO) throw Error("Flight creation/edit endpoint is not configured.");
-    const all = read<Flight[]>("flights", []);
-    write("flights", [f, ...all.filter((e) => e.id !== f.id)]);
+    const original = managedFlights.get(f.id);
+    const departure = new Date(`${f.date}T${f.departure}:00Z`);
+    const arrival = new Date(`${f.date}T${f.arrival}:00Z`);
+    arrival.setUTCDate(
+      arrival.getUTCDate() + (f.arrivalDay || (arrival <= departure ? 1 : 0)),
+    );
+    const payload = {
+      number: f.number,
+      airline: f.airline,
+      origin: f.origin,
+      destination: f.destination,
+      route: f.route,
+      departure_datetime:
+        original?.date === f.date && original.departure === f.departure
+          ? (original.departure_datetime ?? departure.toISOString())
+          : departure.toISOString(),
+      arrival_datetime:
+        original?.date === f.date &&
+        original.arrival === f.arrival &&
+        original.arrivalDay === f.arrivalDay
+          ? (original.arrival_datetime ?? arrival.toISOString())
+          : arrival.toISOString(),
+      price: String(f.price),
+      currency: f.currency || "INR",
+      stops: f.stops,
+      status: f.status,
+      total_seats:
+        (original?.total_seats ?? original?.seats ?? 0) +
+        f.seats -
+        (original?.seats ?? 0),
+    };
+    if (original) await client.put(`/api/admin/flights/${f.id}/`, payload);
+    else await client.post("/api/admin/flights/", payload);
+    return;
   },
   async status(id: string, status: Flight["status"]): Promise<void> {
-    if (!DEMO) {
-      await client.put(`/api/admin/flights/${id}/status/`, { status });
-      return;
-    }
-    const f = (await this.adminFlights()).find((f) => f.id === id);
-    if (f)
-      await this.saveFlight({
-        ...f,
-        status,
-        updatedAt: new Date().toISOString(),
-      });
+    await client.put(`/api/admin/flights/${id}/status/`, { status });
+    return;
+  },
+  async profile(name: string): Promise<User> {
+    return (await client.patch("/api/auth/me/", { name })).data;
   },
 };
-export const errorMessage = (e: unknown) =>
-  axios.isAxiosError(e)
-    ? typeof e.response?.data?.detail === "string"
-      ? e.response.data.detail
-      : "Unable to reach the service. Please try again."
-    : e instanceof Error
-      ? e.message
-      : "Something went wrong. Please try again.";
+export { errorMessage, fieldErrors } from "./feedback";

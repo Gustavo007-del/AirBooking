@@ -9,22 +9,19 @@ import { ArrowRight, SlidersHorizontal, ArrowLeft } from "lucide-react";
 import { service, errorMessage } from "./api";
 import {
   city,
-  DEMO,
   duration,
   money,
   prettyDate,
   searchSchema,
   type Flight,
+  type FlightSearchSource,
   type Search,
 } from "./domain";
 import { useStore } from "./store";
-import {
-  DemoNote,
-  ErrorState,
-  FlightCard,
-  Loading,
-  SearchPanel,
-} from "./components";
+import { ErrorState, FlightCard, Loading, SearchPanel } from "./components";
+import { Notice } from "./Notice";
+import { LiveSchedules } from "./LiveSchedules";
+import { pollVisible } from "./livePolling";
 export default function Flights() {
   const saved = useStore((s) => s.search);
   const [params] = useSearchParams();
@@ -33,8 +30,14 @@ export default function Flights() {
     passengers: Number(params.get("passengers")),
   });
   const search: Search = parsed.success ? parsed.data : saved;
+  const canSearch = searchSchema.safeParse(search).success;
   const key = JSON.stringify(search);
+  useEffect(() => {
+    if (JSON.stringify(useStore.getState().search) !== key)
+      useStore.getState().setSearch(search);
+  }, [key]);
   const [flights, setFlights] = useState<Flight[]>([]);
+  const [source, setSource] = useState<FlightSearchSource>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -54,7 +57,14 @@ export default function Flights() {
   }, [key]);
   useEffect(() => {
     let active = true;
+    if (!canSearch) {
+      setFlights([]);
+      setError("");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setSource(undefined);
     setError("");
     service
       .search(
@@ -67,18 +77,25 @@ export default function Flights() {
             }
           : search,
       )
-      .then((f) => {
-        if (active) setFlights(f);
+      .then((result) => {
+        if (active) {
+          setFlights(result.flights);
+          setSource(result.source);
+        }
       })
       .catch((e) => active && setError(errorMessage(e)))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [key, retry, outbound]);
+  }, [key, retry, outbound, canSearch]);
   const visible = flights
     .filter(
       (f) =>
+        (!outbound?.arrival_datetime ||
+          !f.departure_datetime ||
+          Date.parse(f.departure_datetime) >
+            Date.parse(outbound.arrival_datetime)) &&
         f.price <= price &&
         (!stops || !f.stops) &&
         (!available ||
@@ -107,9 +124,15 @@ export default function Flights() {
           (outbound ? "?return=" + encodeURIComponent(f.id) : ""),
       );
   }
+  if (!canSearch)
+    return (
+      <main className="page wrap">
+        <h1>Find a flight</h1>
+        <SearchPanel />
+      </main>
+    );
   return (
     <main className="page wrap">
-      <DemoNote />
       <div className="page-heading">
         <div>
           <span className="eyebrow copper-text">YOUR JOURNEY, YOUR WAY</span>
@@ -129,6 +152,20 @@ export default function Flights() {
         </button>
       </div>
       {edit && <SearchPanel compact />}
+      {source === "airlabs_routes" && (
+        <Notice
+          tone="info"
+          title="AirLabs timetable"
+          message="Flight times are expected schedules shown in UTC. Fares, seats, and reservations are simulated by Air Booking."
+        />
+      )}
+      {source === "database" && (
+        <Notice
+          tone="info"
+          title="Saved flights"
+          message="The AirLabs timetable is unavailable. Showing flights saved in Air Booking."
+        />
+      )}
       {outbound && (
         <div className="notice">
           <strong>
@@ -261,6 +298,12 @@ export default function Flights() {
               </button>
             </div>
           )}
+          <LiveSchedules
+            key={`${key}-${outbound?.id ?? "outbound"}`}
+            origin={outbound ? search.destination : search.origin}
+            destination={outbound ? search.origin : search.destination}
+            departure={outbound ? search.returnDate : search.departure}
+          />
         </section>
       </div>
     </main>
@@ -270,6 +313,10 @@ export function FlightDetails() {
   const { id } = useParams();
   const [flight, setFlight] = useState<Flight>();
   const [error, setError] = useState("");
+  useEffect(
+    () => (id ? pollVisible(() => service.flight(id), setFlight) : undefined),
+    [id],
+  );
   useEffect(() => {
     service
       .flight(id!)
@@ -281,7 +328,6 @@ export function FlightDetails() {
       <Link className="text-link" to="/flights">
         <ArrowLeft size={16} /> Back to results
       </Link>
-      <DemoNote />
       <h1>Your flight, in detail.</h1>
       {error ? (
         <ErrorState message={error} />
@@ -305,22 +351,29 @@ export function FlightDetails() {
                 <small>FLIGHT STATUS</small>
                 <h3>{flight.status}</h3>
                 <small>
-                  {DEMO
-                    ? "Illustrative status"
-                    : flight.updatedAt
-                      ? "Updated " + new Date(flight.updatedAt).toLocaleString()
-                      : "Update time unavailable"}
+                  {flight.updatedAt
+                    ? "Updated " + new Date(flight.updatedAt).toLocaleString()
+                    : "Update time unavailable"}
                 </small>
               </div>
             </div>
             <p>
-              Fare conditions and baggage allowance must be confirmed against
-              the selected backend fare. Demonstration fares have no ticketing
-              value.
+              Confirm fare conditions and baggage allowance with the airline
+              before travelling.
             </p>
-            <Link className="button" to={"/booking/" + flight.id}>
-              Continue with this one-way flight <ArrowRight size={17} />
-            </Link>
+            {flight.seats > 0 &&
+            ["Scheduled", "On time", "Delayed"].includes(flight.status) &&
+            flight.date >= new Date().toISOString().slice(0, 10) ? (
+              <Link className="button" to={"/booking/" + flight.id}>
+                Continue with this one-way flight <ArrowRight size={17} />
+              </Link>
+            ) : (
+              <Notice
+                tone="warning"
+                title="Flight unavailable"
+                message="This flight is no longer available to book."
+              />
+            )}
           </div>
         </>
       )}

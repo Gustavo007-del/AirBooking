@@ -1,5 +1,8 @@
 node_modules/
 dist/
+*.tsbuildinfo
+.env
 .env.local
+.env.*.local
 *.blend1
-.openai/*.zip
+

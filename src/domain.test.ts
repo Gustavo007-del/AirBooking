@@ -1,12 +1,32 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   searchSchema,
-  defaultSearch,
+  defaultSearch as emptySearch,
   dateAfter,
   passengerSchema,
 } from "./domain";
-import { service, mockFlights } from "./api";
+import { service, client } from "./api";
 import { useStore } from "./store";
+import { errorMessage, fieldErrors } from "./feedback";
+
+it("presents a Django password validation error without internal field names", () => {
+  const message = "The password is too similar to the email.";
+  const error = {
+    isAxiosError: true,
+    response: {
+      status: 400,
+      data: {
+        detail: `non_field_errors: ${message}`,
+        errors: { password: [message] },
+      },
+    },
+  };
+  const friendly =
+    "Choose a password that is different from your email address.";
+  expect(errorMessage(error)).toBe(friendly);
+  expect(fieldErrors(error).password).toBe(friendly);
+});
+const defaultSearch = { ...emptySearch, origin: "DEL", destination: "LHR" };
 const memory = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
   value: {
@@ -16,6 +36,7 @@ Object.defineProperty(globalThis, "localStorage", {
   },
   configurable: true,
 });
+afterEach(() => vi.restoreAllMocks());
 beforeEach(() => {
   memory.clear();
   useStore.getState().setUser(null);
@@ -36,13 +57,13 @@ describe("Flight search validation", () => {
       searchSchema.safeParse({ ...defaultSearch, returnDate: dateAfter(1) })
         .success,
     ).toBe(false));
-  it("rejects a past departure and unknown airport", () => {
+  it("rejects a past departure and malformed airport code", () => {
     expect(
       searchSchema.safeParse({ ...defaultSearch, departure: "2020-01-01" })
         .success,
     ).toBe(false);
     expect(
-      searchSchema.safeParse({ ...defaultSearch, origin: "XYZ" }).success,
+      searchSchema.safeParse({ ...defaultSearch, origin: "XX" }).success,
     ).toBe(false);
   });
   it("allows one way without return date", () =>
@@ -57,9 +78,9 @@ describe("Flight search validation", () => {
 });
 describe("Booking trust boundaries", () => {
   const passenger = {
-    firstName: "Demo",
+    firstName: "Test",
     lastName: "Traveller",
-    email: "demo@example.com",
+    email: "test@example.com",
     birthDate: "1990-01-01",
   };
   it("rejects incomplete passenger details", () =>
@@ -67,70 +88,70 @@ describe("Booking trust boundaries", () => {
       passengerSchema.safeParse({ ...passenger, email: "invalid" }).success,
     ).toBe(false));
   it("blocks booking without an approved user", async () => {
-    await expect(
-      service.book(
-        mockFlights(defaultSearch).slice(0, 1),
-        [passenger],
-        "test-id",
-      ),
-    ).rejects.toThrow("approved");
-    useStore
-      .getState()
-      .setUser({
-        id: "pending",
-        name: "Pending",
-        email: "pending@example.com",
-        role: "user",
-        status: "pending",
-      });
-    await expect(
-      service.book(
-        mockFlights(defaultSearch).slice(0, 1),
-        [passenger],
-        "test-id",
-      ),
-    ).rejects.toThrow("approved");
-  });
-  it("creates an explicitly simulated round trip and deduplicates retries", async () => {
-    useStore.getState().setUser(await service.demoLogin("user"));
-    const legs = [
-      mockFlights(defaultSearch)[0],
-      mockFlights({
-        ...defaultSearch,
-        origin: "LHR",
-        destination: "DEL",
-        departure: defaultSearch.returnDate,
-      })[1],
-    ];
-    const b = await service.book(legs, [passenger], "test-booking");
-    expect(b.demo).toBe(true);
-    expect(b.paymentStatus).toBe("Simulated");
-    expect(b.total).toBe(legs[0].price + legs[1].price);
-    await service.book(legs, [passenger], "test-booking");
-    expect(await service.bookings()).toHaveLength(1);
-  });
-  it("does not expose another demo user’s bookings", async () => {
-    useStore.getState().setUser(await service.demoLogin("user"));
-    await service.book(
-      [mockFlights(defaultSearch)[0]],
-      [passenger],
-      "private-booking",
+    await expect(service.book([], [passenger], "test-id")).rejects.toThrow(
+      "approved",
     );
-    useStore
-      .getState()
-      .setUser({
-        id: "other",
-        name: "Other",
-        email: "other@example.com",
-        role: "user",
-        status: "approved",
-      });
-    expect(await service.bookings()).toHaveLength(0);
+    useStore.getState().setUser({
+      id: "pending",
+      name: "Pending",
+      email: "pending@example.com",
+      role: "user",
+      status: "pending",
+    });
+    await expect(service.book([], [passenger], "test-id")).rejects.toThrow(
+      "approved",
+    );
   });
-  it("preserves cabin pricing when retrieving a selected flight", async () => {
-    const s = { ...defaultSearch, cabin: "Business" as const };
-    useStore.getState().setSearch(s);
-    const f = mockFlights(s)[0];
-    expect((await service.flight(f.id)).price).toBe(f.price);
+
+  it("sends cabin and idempotency key, then pays the reservation", async () => {
+    useStore.getState().setUser({
+      id: "user",
+      name: "Traveller",
+      email: "test@example.com",
+      role: "user",
+      status: "approved",
+    });
+    useStore.getState().setSearch({ ...defaultSearch, cabin: "Business" });
+    const post = vi
+      .spyOn(client, "post")
+      .mockResolvedValueOnce({ data: { id: "reservation", status: "Pending" } })
+      .mockResolvedValueOnce({
+        data: {
+          id: "reservation",
+          status: "Confirmed",
+          paymentStatus: "Simulated",
+        },
+      });
+    const result = await service.book([], [passenger], "request-key");
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      "/api/bookings/",
+      { flight_ids: [], passengers: [passenger], cabin: "Business" },
+      { headers: { "Idempotency-Key": "request-key" } },
+    );
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      "/api/bookings/reservation/payment/",
+      { outcome: "success" },
+    );
+    expect(result.status).toBe("Confirmed");
+  });
+  it("does not replace a failed search with generated flights", async () => {
+    vi.spyOn(client, "get").mockRejectedValueOnce(
+      new Error("Service unavailable"),
+    );
+    await expect(service.search(defaultSearch)).rejects.toThrow(
+      "Service unavailable",
+    );
+  });
+  it("sends the selected cabin when retrieving a flight", async () => {
+    useStore.getState().setSearch({ ...defaultSearch, cabin: "Business" });
+    const get = vi
+      .spyOn(client, "get")
+      .mockResolvedValueOnce({ data: { id: "flight", price: 280 } });
+    expect((await service.flight("flight")).price).toBe(280);
+    expect(get).toHaveBeenCalledWith("/api/flights/flight/", {
+      params: { cabin: "Business" },
+    });
   });
 });

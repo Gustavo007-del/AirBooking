@@ -76,15 +76,13 @@ The account seed creates only accounts. You can rerun it safely. If an email alr
 - **Approval email.** Local approval emails appear in the Django terminal. Follow the [backend guide](backend/README.md) to send email to real inboxes.
 
 
-**API documentation**
-
-Sign in to [Django admin](http://localhost:8000/admin/) and open [Swagger](http://localhost:8000/api/docs/) to browse and try the backend API. The generated [openapi.yaml](backend/openapi.yaml) lists the endpoints, inputs, responses, and authentication rules in a format documentation tools can read.
-
 **Project guide**
+
+Read the [project documentation](docs/project.md) for the application structure, a walkthrough, and the API reference.
 
 - `src` contains React pages, components, animations, tests, and the API client.
 - `public` contains browser-ready 3D models, textures, and images. See the [destination photo credits](public/destinations/credits.txt).
 - `assets-source` contains the editable Blender files and export scripts.
-- `backend` contains Django, database migrations, and background jobs. See the [backend guide](backend/README.md) for settings, email, API endpoints, and deployment.
+- `backend` contains Django, database migrations, and background jobs. See the [backend guide](backend/README.md) for settings, email, background jobs, and deployment.
 
 Use `npm test` to run frontend tests and `npm run build` to create a production build in `dist`. During development, Vite forwards API calls to Django on port 8000.

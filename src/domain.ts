@@ -1,32 +1,37 @@
 import { z } from "zod";
 export const brand = {
-  name: "AERÉ",
+  name: "AirB",
+  fullName: "Air Booking",
   tagline: "Above the ordinary.",
   currency: "INR",
 };
-export const DEMO = import.meta.env.VITE_DATA_MODE !== "api";
-export const airports = [
-  { code: "DEL", city: "New Delhi", name: "Indira Gandhi International" },
-  { code: "LHR", city: "London", name: "London Heathrow" },
-  { code: "DXB", city: "Dubai", name: "Dubai International" },
-  { code: "SIN", city: "Singapore", name: "Changi Airport" },
-  { code: "NRT", city: "Tokyo", name: "Narita International" },
-  { code: "DPS", city: "Bali", name: "Ngurah Rai International" },
-  { code: "CDG", city: "Paris", name: "Charles de Gaulle" },
-  { code: "JFK", city: "New York", name: "John F. Kennedy International" },
-  {
-    code: "BOM",
-    city: "Mumbai",
-    name: "Chhatrapati Shivaji Maharaj International",
-  },
-  { code: "ZRH", city: "Zurich", name: "Zurich Airport" },
-];
-export const city = (code: string) =>
-  airports.find((a) => a.code === code)?.city || code;
-export const money = (n: number) =>
+export interface Airport {
+  id: number;
+  code: string;
+  name: string;
+  city: string;
+  country: string;
+  region?: string;
+  timezone: string;
+  active: boolean;
+  latitude: string | null;
+  longitude: string | null;
+}
+export interface Route {
+  id: number;
+  origin: number;
+  destination: number;
+  active: boolean;
+  distance_km: number | null;
+  duration_minutes: number | null;
+  origin_detail: Airport;
+  destination_detail: Airport;
+}
+export const city = (code: string, name?: string) => name || code;
+export const money = (n: number, currency = "INR") =>
   new Intl.NumberFormat("en-IN", {
     style: "currency",
-    currency: "INR",
+    currency,
     maximumFractionDigits: 0,
   }).format(n);
 export const dateAfter = (days: number) => {
@@ -45,16 +50,14 @@ export const searchSchema = z
     type: z.enum(["round", "one"]),
     origin: z
       .string()
-      .refine(
-        (v) => airports.some((a) => a.code === v),
-        "Choose an origin airport",
-      ),
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z]{3}$/, "Choose an origin airport"),
     destination: z
       .string()
-      .refine(
-        (v) => airports.some((a) => a.code === v),
-        "Choose a destination airport",
-      ),
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z]{3}$/, "Choose a destination airport"),
     departure: z
       .string()
       .refine(
@@ -76,18 +79,27 @@ export const searchSchema = z
 export type Search = z.infer<typeof searchSchema>;
 export const defaultSearch: Search = {
   type: "round",
-  origin: "DEL",
-  destination: "LHR",
+  origin: "BLR",
+  destination: "DEL",
   departure: dateAfter(14),
   returnDate: dateAfter(21),
   passengers: 1,
   cabin: "Economy",
 };
 export type Status =
-  "On time" | "Delayed" | "Cancelled" | "Departed" | "Arrived";
+  "Scheduled" | "On time" | "Delayed" | "Cancelled" | "Departed" | "Arrived";
 export interface Flight {
   id: string;
   number: string;
+  route?: number | null;
+  schedule_source?: "airlabs_routes" | "database";
+  aircraft?: Aircraft;
+  status_source?: string;
+  demonstration?: boolean;
+  origin_city?: string;
+  destination_city?: string;
+  departure_datetime?: string;
+  arrival_datetime?: string;
   airline: string;
   origin: string;
   destination: string;
@@ -101,12 +113,33 @@ export interface Flight {
   seats: number;
   status: Status;
   updatedAt?: string;
+  total_seats?: number;
+  currency?: string;
+}
+export type FlightSearchSource = "airlabs_routes" | "database";
+export interface Aircraft {
+  aircraft_icao?: string;
+  model?: string;
+  manufacturer?: string;
+  reg_number?: string;
+}
+export interface LiveFlight {
+  number: string;
+  origin: string;
+  destination: string;
+  departure: string;
+  arrival: string;
+  status: string;
+  aircraft: Aircraft;
+  signal_at: string | null;
 }
 export interface User {
   id: string;
   name: string;
   email: string;
   role: "user" | "admin";
+  phone?: string;
+  is_active?: boolean;
   status: "pending" | "approved" | "rejected";
 }
 export const passengerSchema = z.object({
@@ -125,9 +158,9 @@ export interface Booking {
   flights: Flight[];
   passengers: Passenger[];
   total: number;
-  status: "Confirmed" | "Cancelled";
-  paymentStatus: "Simulated" | "Paid" | "Pending";
+  currency?: string;
+  status: "Pending" | "Confirmed" | "Cancelled";
+  paymentStatus: "Simulated" | "Paid" | "Pending" | "Failed" | "Refunded";
   createdAt: string;
-  demo: boolean;
 }
 export const duration = (m: number) => `${Math.floor(m / 60)}h ${m % 60}m`;

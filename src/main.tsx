@@ -19,9 +19,10 @@ import {
 import { ArrowUpRight, Menu, X, Plane, UserRound } from "lucide-react";
 import { brand } from "./domain";
 import { useStore } from "./store";
-import { logout } from "./api";
+import { logout, restoreSession } from "./api";
 import { Loading, ErrorState } from "./components";
 import "./styles.css";
+import { OpeningLoader, OPENING_STEPS } from "./OpeningLoader";
 const Landing = lazy(() => import("./Landing"));
 const Destinations = lazy(() =>
   import("./Landing").then((m) => ({ default: m.DestinationGrid })),
@@ -77,7 +78,14 @@ function Guard({
   admin?: boolean;
 }) {
   const user = useStore((s) => s.user);
+  const sessionReady = useStore((s) => s.sessionReady);
   const location = useLocation();
+  if (!sessionReady)
+    return (
+      <main className="page">
+        <Loading />
+      </main>
+    );
   if (!user)
     return (
       <Navigate
@@ -92,8 +100,35 @@ function Guard({
   return children;
 }
 function App() {
+  useEffect(() => {
+    let active = true;
+    void restoreSession().then((user) => {
+      if (!active) return;
+      const store = useStore.getState();
+      if (user && !store.user) store.setUser(user);
+      store.setSessionReady();
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
   const location = useLocation();
   const home = location.pathname === "/";
+  const [opening, setOpening] = useState(home);
+  const [openingProgress, setOpeningProgress] = useState(1);
+  useEffect(() => {
+    if (!home) setOpening(false);
+  }, [home]);
+  useEffect(() => {
+    if (!opening) return;
+    const timer = window.setTimeout(() => setOpening(false), 14000);
+    return () => window.clearTimeout(timer);
+  }, [opening]);
+  useEffect(() => {
+    if (!opening || openingProgress < OPENING_STEPS) return;
+    const timer = window.setTimeout(() => setOpening(false), 300);
+    return () => window.clearTimeout(timer);
+  }, [opening, openingProgress]);
   const [scrolled, setScrolled] = useState(false);
   const [menu, setMenu] = useState(false);
   const user = useStore((s) => s.user);
@@ -113,11 +148,12 @@ function App() {
   }, []);
   return (
     <>
+      {opening && home && <OpeningLoader ready={openingProgress} />}
       <a href="#main-content" className="skip-link">
         Skip to content
       </a>
       <header className={`header ${home && !scrolled ? "over-hero" : ""}`}>
-        <Link className="brand" to="/" aria-label="AERÉ home">
+        <Link className="brand" to="/" aria-label={`${brand.fullName} home`}>
           <span className="brand-symbol">╱</span>
           {brand.name}
           <sup>®</sup>
@@ -126,16 +162,19 @@ function App() {
           <NavLink to="/" end>
             Home
           </NavLink>
-          <Link to="/#explore">Explore</Link>
           <NavLink to="/destinations">Destinations</NavLink>
           <NavLink to="/flights">Flights</NavLink>
+          <NavLink to="/status">Flight status</NavLink>
           <NavLink to="/trips">My Trips</NavLink>
           {user?.role === "admin" && <NavLink to="/admin">Admin</NavLink>}
         </nav>
         <div className="header-actions">
           {user ? (
             <>
-              <Link className="account-link" to="/dashboard">
+              <Link
+                className="account-link"
+                to={user.role === "admin" ? "/admin" : "/dashboard"}
+              >
                 <UserRound size={16} />
                 {user.name.split(" ")[0]}
               </Link>
@@ -171,7 +210,14 @@ function App() {
             }
           >
             <Routes>
-              <Route path="/" element={<Landing />} />
+              <Route
+                path="/"
+                element={
+                  <Landing
+                    onOpeningProgress={opening ? setOpeningProgress : undefined}
+                  />
+                }
+              />
               <Route
                 path="/destinations"
                 element={
@@ -187,8 +233,22 @@ function App() {
                   </main>
                 }
               />
-              <Route path="/flights" element={<Flights />} />
-              <Route path="/flight/:id" element={<FlightDetails />} />
+              <Route
+                path="/flights"
+                element={
+                  <Guard>
+                    <Flights />
+                  </Guard>
+                }
+              />
+              <Route
+                path="/flight/:id"
+                element={
+                  <Guard>
+                    <FlightDetails />
+                  </Guard>
+                }
+              />
               <Route
                 path="/booking/:id"
                 element={
@@ -241,7 +301,14 @@ function App() {
                   </Guard>
                 }
               />
-              <Route path="/status" element={<FlightStatus />} />
+              <Route
+                path="/status"
+                element={
+                  <Guard>
+                    <FlightStatus />
+                  </Guard>
+                }
+              />
               <Route
                 path="/admin"
                 element={
@@ -283,7 +350,6 @@ function App() {
           </div>
           <div>
             <span>HERE TO HELP</span>
-            <Link to="/status">Flight status</Link>
             <Link to="/profile">Your account</Link>
             <Link to="/login">Sign in</Link>
           </div>
@@ -294,7 +360,7 @@ function App() {
         </div>
         <div className="footer-bottom wrap">
           <span>
-            © {new Date().getFullYear()} {brand.name}. An original aviation
+            © {new Date().getFullYear()} {brand.fullName}. An original aviation
             concept.
           </span>
           <span>Designed for the journey.</span>
