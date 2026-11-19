@@ -1,87 +1,90 @@
-# AERÉ — Above the ordinary
+# Air Booking
 
-React 19 + Vite + TypeScript flight-booking frontend. No backend is included or modified.
+Air Booking is a flight booking website with an interactive 3D homepage. Explore destinations, search for flights, reserve seats, and manage your trips. Fares, payments, and bookings are simulated. The app does not charge money or issue airline tickets.
 
-## Run
+**Technologies**
 
-Requires Node 22 or newer.
+The website uses React, TypeScript, Vite, and React Three Fiber. The backend uses Python, Django REST Framework, and JWT authentication. SQLite is included for local development. PostgreSQL is supported, and Celery with Redis can run background jobs.
 
-```sh
-npm install
-npm run dev
-npm test
-npm run build
-```
+**Before you start**
 
-Open the local URL Vite prints. The production SPA is in `dist/`; configure your host to serve `index.html` for application routes. Sites hosting is declared in `.openai/hosting.json`.
+Install [Python 3.12](https://www.python.org/downloads/) and [Node.js](https://nodejs.org/en/download), either 22.12 or later in the 22 series or Node.js 24. On Windows, make sure Python is available in your terminal. You’ll use two terminals, one for Django and one for the website.
 
-## Try the complete flow
+**Start the backend**
 
-1. Search from the home panel. Sample airport options, dates, passenger count, and cabin are editable.
-2. Choose an outbound flight, then a return flight for round trips.
-3. At sign-in, choose **Demo traveller**. Use fictional passenger details.
-4. Review the journey, acknowledge the simulation, and complete the demo payment.
-5. The booking appears in My Trips only after the demo persistence operation succeeds. No actual payment or ticket is created.
-6. Sign out and use **Open demo administration** on the sign-in page to inspect registrations, approvals, flight edits/status, and bookings.
-7. Registration creates a pending demo user. After approval in the admin console, enter that email on the sign-in page and choose **Resume a registered demo account**. No password is retained in demo mode.
+1. Open a terminal in the project folder, the one that contains `package.json`. Run `cd backend`.
+2. Check `python --version`, then run `python -m venv venv` with Python 3.12. If Windows points to a different version and the Python launcher has 3.12 installed, use `py -3.12 -m venv venv`.
+3. Activate the environment. In PowerShell, run `.\venv\Scripts\Activate.ps1`. In Command Prompt, run `venv\Scripts\activate.bat`. On macOS or Linux, run `source venv/bin/activate` and use `python3.12` to create it if needed.
+4. Install dependencies with `python -m pip install -r requirements.lock.txt`.
+5. Create `.env` from the example. From `backend`, run `Copy-Item .env.example .env` in PowerShell, `copy .env.example .env` in Command Prompt, or `cp .env.example .env` on macOS or Linux. Skip this step if you already have a `.env` file.
+6. Generate a Django secret with `python -c "import secrets; print(secrets.token_urlsafe(64))"`.
+7. Open `.env` and replace the placeholder after `DJANGO_SECRET_KEY=` with the generated value. Save the file and keep it private.
+8. Keep `DEBUG=true` and `DATABASE_URL=sqlite:///db.sqlite3` in `.env` for local development. Run `python manage.py migrate` to prepare `backend/db.sqlite3`.
+9. Run `python manage.py seed_demo_data` to add the three demo accounts below. To use your own administrator instead, run `python manage.py createsuperuser`.
+10. To try flight search without an AirLabs key, run `python manage.py setup_demo_flights`. This one command downloads the airport catalogue for the dropdown and adds sample flights for the next 30 days. It needs internet access for the download. Try Delhi (DEL) to London Heathrow (LHR) about two weeks ahead.
+11. Run `python manage.py runserver` and leave this terminal open.
 
-Demo users, flight edits, and bookings live under `aere-demo-*` keys in localStorage. They are sample data, not secure production records. User sessions and JWTs live only in memory; reload requires a new sign-in. Search preferences persist separately. The demo administrator is available only in demo builds. Real roles and permissions must also be enforced by Django.
+If PowerShell blocks activation, use Command Prompt or replace `python` in the backend commands with `.\venv\Scripts\python.exe`.
 
-## Backend integration
+**Use AirLabs**
+To View Flights and realtime status Create account in Airlabs and get api key from there and put in the .env file as AIRLABS_API_KEY="your api key here", detailed instruction is given below.
 
-Copy `.env.example` to `.env.local`, set `VITE_DATA_MODE=api` and `VITE_API_BASE_URL`, then restart Vite/rebuild. All API calls are isolated in `src/api.ts`; domain types are in `src/domain.ts`. The API mode never falls back to mocks after an error. Errors, loading, and empty results are explicit.
+1. Create a free [AirLabs account](https://airlabs.co/signup). After signing in, copy the API key from your [AirLabs dashboard](https://airlabs.co/account).
+2. If you skipped `setup_demo_flights`, run `python manage.py import_airports` from `backend` to load the airport catalogue on its own.
+3. Set `AIRLABS_API_KEY=your_airlabs_key_here` in `backend/.env`, replacing the sample text with your key. If you have a manual status setting, change it to `FLIGHT_STATUS_PROVIDER=airlabs`. Keep the actual key in `.env`, which Git ignores.
+4. To restart Django, press Ctrl+C in the backend terminal, then run `python manage.py runserver` again from `backend`.
 
-The provided brief specified endpoint paths but no response schema. **The types below are a proposed adapter contract, not a verified Django integration.** Adjust the single service layer to your serializer contract before connecting production data.
+AirLabs advertises 1,000 free requests per month. Routes responses are limited to 50 rows per request with a free key. Check **Usage** in the AirLabs dashboard for your account’s quota. [AirLabs free allowance](https://airlabs.co/OAG-Airline-Schedules-Database-API) · [Routes API limits](https://airlabs.co/docs/routes)
 
-| Endpoint | Expected request/response |
-| --- | --- |
-| `POST /api/auth/register/` | `{name,email,password}` → `User` |
-| `POST /api/auth/login/` | `{email,password}` → `{access,refresh,user:User}` |
-| `POST /api/auth/token/refresh/` | `{refresh}` → `{access,refresh?}` |
-| `GET /api/flights/search/` | `Search` query fields → `Flight[]` or `{results:Flight[]}` |
-| `GET /api/flights/{id}/` | `Flight` |
-| `POST /api/bookings/` | `{flight_ids,passengers}` plus Idempotency-Key → `Booking` |
-| `GET /api/bookings/` | `Booking[]` or `{results:Booking[]}`; backend scopes to user/role |
-| `GET /api/bookings/{id}/` | authorized `Booking` |
-| `GET /api/admin/users/pending/` | `User[]` or `{results:User[]}` |
-| `POST /api/admin/users/{id}/approve/` | approval action |
-| `GET /api/admin/flights/` | `Flight[]` or `{results:Flight[]}` |
-| `PUT /api/admin/flights/{id}/status/` | `{status}` |
+Search uses the AirLabs weekly timetable first. If your key is missing or AirLabs rejects a request because the quota is exhausted, search uses saved flights when available. A new database with no saved flights may show no matches. Cached results can still be served until they expire. Live flight-number lookup depends on AirLabs, while saved flights keep their last recorded status. A successful timetable search with no matches stays empty.
 
-The Axios client provides in-memory bearer tokens, a shared refresh request for concurrent 401s, one retry per failed request, timeout handling, and logout on failed refresh. Configure Django CORS for the frontend origin. Do not put secrets in Vite environment variables.
+**Start the website**
 
-Unknown endpoints are deliberately not invented: rejection, flight creation/editing, profile persistence, all-user totals, analytics, account activation, cancellation, and real payment authorization require an agreed backend contract. Their sample workflows work locally where applicable; unavailable API-mode mutations are disabled or return a clear configuration error. Pending/activation screens are prepared, but activation requires backend approval followed by sign-in. No live tracking is fabricated. Status is read from returned flight data with its timestamp when supplied.
+1. Open a second terminal in the project folder containing `package.json`.its the root folder.
+2. Install dependencies with `npm ci`.
+3. Start the site with `npm run dev`.
+4. Open [Air Booking](http://localhost:5173), or use the address printed in the terminal. If PowerShell blocks npm's script, use `npm.cmd ci` and `npm.cmd run dev`.
 
-## Routes
+Next time, activate the backend environment, run `python manage.py runserver` from `backend`, and run `npm run dev` from the project folder.  Your data stays in the local database.
+Press Ctrl+C in each terminal to stop it.
+**Demo accounts**
 
-`/`, `/destinations`, `/flights`, `/flight/:id`, `/booking/:id`, `/confirmation/:id`, `/login`, `/register`, `/pending`, `/activation`, `/dashboard`, `/trips`, `/trips/:id`, `/profile`, `/status`, `/admin`.
+Use the email address as the username. Run the seed only on your local development database with `DEBUG=true`.
+This is the Admin credentials for testing
+| Account          | Email                      | Password      |
+| ---              | ---                        | ---           |
+| Demo Admin       | `admin@airbooking.test`    | `CloudRun42!` |
+| Demo Approved    | `approved@airbooking.test` | `BlueWing42!` |
+| Demo Pending     | `pending@airbooking.test`  | `GateHold42!` |
 
-Booking, confirmations, trips, profile and dashboard require an approved session; administration additionally requires the admin role. The browser guard is for navigation only; server authorization is required.
+The account seed creates only accounts. You can rerun it safely. If an email already exists, the command keeps that account, including its current password, role, and approval status. The approved customer can use search and booking immediately. Flight results come from AirLabs or from saved flights, including the sample flights added by `setup_demo_flights`.
 
-## Design and assets
+**Try registration and approval**
 
-- Brand name/currency: `src/domain.ts` (`brand`). Color, spacing, typography and responsive styles: `src/styles.css`.
-- Manrope and Inter from Google Fonts, with system fallbacks. Photography is editorial and loaded from Unsplash. No partnerships, awards or customer statistics are represented.
-- Original aircraft: `assets-source/aere-aircraft.blend`. Reproducible model script: `assets-source/build_aircraft.py`. The script uses a separate Blender scene; update `ROOT` for another machine.
-- Browser model: `public/models/aere-aircraft.glb` (~1.7 MB), PBR materials, shaped fuselage, cockpit, windows, doors, swept wings, winglets, nacelles and fan blades. This is a brand concept, not a certified aircraft engineering model.
-- Transparent fallback: `public/aircraft-poster.png` (rendered from the original Blender scene).
-- Globe texture: Three.js example Earth texture, derived from NASA Blue Marble imagery, downloaded from `https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg`.
-- Cloud billboards use Drei's cloud texture. Earth routes are illustrative, not live flight feeds.
-- Lucide icons (ISC), Three.js (MIT), and the listed npm packages retain their respective licenses.
+1. Sign in as **Demo Pending**. The website displays an approval-required message. To test registration as well, use **Create an account** with a different email and a password of at least eight characters.
+2. In another browser profile or private window, sign in as **Demo Admin**. Sign-in opens the [admin dashboard](http://localhost:5173/admin) directly.
+3. Open **Users** and choose **Approve** for the pending account. Local approval emails appear in the Django terminal with the default settings.
+4. Return to the customer window and sign in. The approved account can now search for flights and make simulated reservations.
 
-## Motion, performance, and accessibility
+**Use Air Booking**
 
-3D is route-lazy and viewport-mounted, with a capped device pixel ratio, simplified mobile postprocessing, and a static fallback. One reusable camera controller owns each canvas camera. GSAP contexts clean up ScrollTriggers, and Lenis is destroyed on unmount. Scrolling reverses camera interpolation. A motion toggle and reduced-motion media query provide a still experience. Independent scene canvases are used for aircraft/cloud, globe and close-up chapters; this is not a single continuous physically shared world.
+- **Accounts.** Register with a customer email address different from your admin address. Use a password of at least eight characters. New customers wait for admin approval before signing in.
+- **Admin.** Sign in as an admin to open the dashboard. Open **Users** to approve the new customer. **Overview** shows the approval queue, bookings, and service settings. The other sections manage bookings, flights, airports, and routes.
+- **Search and book.** Type an airport code, city, state, or country, then select an airport. A new search starts with Bengaluru (BLR) to New Delhi (DEL). Select a flight, enter traveller details, and complete the simulated payment.
+- **My Trips.** Open a booking to view its details or cancel an eligible trip.
+- **Flight status.** Open **Flight status** in the main menu. An airline flight number looks up the current occurrence from AirLabs. A flight ID shows the recorded status for a booked flight.
+- **Approval email.** Local approval emails appear in the Django terminal. Follow the [backend guide](backend/README.md) to send email to real inboxes.
 
-Forms have labels, native date controls, keyboard-friendly airport datalists, validation messages, focus outlines, skip navigation, and visible simulation notices. Application pages use restrained motion. All operational forms remain accessible independently of 3D loading.
 
-## Validation and remaining integration work
+**API documentation**
 
-- TypeScript and production bundle verified.
-- 11 tests cover search dates/airports/counts, passenger validation, approval protection, booking idempotency, user scoping, and cabin price preservation.
-- Browser walkthrough covers round-trip search, approval guard, required-field validation, payment simulation and confirmation; desktop/mobile visual checks are recorded during development.
-- `npm audit --omit=dev` reports zero production vulnerabilities. The full audit currently flags the development-only picomatch dependency chain; the configured registry's newest picomatch is 4.0.7 and has no fixed release. Re-audit when a patch becomes available. Never expose the Vite development server publicly as a production service.
-- 3D vendor bundle is ~380 KB gzip and lazy-loaded. Imagery/fonts and Drei cloud assets require network access. For an entirely offline build, self-host those third-party assets after confirming their licenses.
-- No real backend endpoint or payment provider was supplied, so real reservations, real-time updates, and production account approval have not been integration-tested.
+Sign in to [Django admin](http://localhost:8000/admin/) and open [Swagger](http://localhost:8000/api/docs/) to browse and try the backend API. The generated [openapi.yaml](backend/openapi.yaml) lists the endpoints, inputs, responses, and authentication rules in a format documentation tools can read.
 
-Editable globe studio: assets-source/aere-world.blend contains a packed Earth texture and editable curved route objects. Regenerate with assets-source/build_globe.py.
+**Project guide**
+
+- `src` contains React pages, components, animations, tests, and the API client.
+- `public` contains browser-ready 3D models, textures, and images. See the [destination photo credits](public/destinations/credits.txt).
+- `assets-source` contains the editable Blender files and export scripts.
+- `backend` contains Django, database migrations, and background jobs. See the [backend guide](backend/README.md) for settings, email, API endpoints, and deployment.
+
+Use `npm test` to run frontend tests and `npm run build` to create a production build in `dist`. During development, Vite forwards API calls to Django on port 8000.
