@@ -1,5 +1,15 @@
 # Air Booking visual walkthrough
 
+## 3D homepage
+
+[Watch or download the 34-second homepage walkthrough (MP4)](https://raw.githubusercontent.com/Gustavo007-del/AirBooking/main/docs/review/3d-homepage-walkthrough.mp4)
+
+Scroll from the aircraft above the clouds past the destination cards to the runway. The plane takes off, then the page moves through the route globe, passenger cabin, and coastal flyover.
+
+![Air Booking homepage with the 3D aircraft above the clouds and the flight search form below](3d-homepage.png)
+
+## Booking walkthrough
+
 [Watch or download the booking walkthrough (WebM)](https://raw.githubusercontent.com/Gustavo007-del/AirBooking/main/docs/review/booking-walkthrough.webm)
 
 The recording follows one customer booking a Delhi to London Heathrow flight. The six screenshots below show the main steps and the resulting booking in the administrator dashboard. All accounts, passenger details, flights, and payments shown are demo data.

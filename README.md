@@ -78,7 +78,7 @@ The account seed creates only accounts. You can rerun it safely. If an email alr
 
 **Project guide**
 
-[View the screenshots and booking walkthrough video](docs/review/README.md).
+[View the screenshots and videos of the 3D homepage and booking flow](docs/review/README.md).
 
 Read the [project documentation](docs/project.md) for the application structure, a walkthrough, and the API reference.
 
